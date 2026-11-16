@@ -1,0 +1,26 @@
+# syntax=docker/dockerfile:1
+# Imagem do job de backup (ADR-0012). Local; nada é publicado em registry. Build: npm run image:build:backup
+#
+# Base: postgres:14-bookworm (Debian 12, PostgreSQL 14.25), fixada pelo digest do índice multi-arquitetura resolvido em
+# 2026-11-16. Atualizar (U16, cadência a definir): `docker pull postgres:14-bookworm`, copiar o digest (RepoDigests) para o ARG,
+# reconferir as versões dos pacotes (`apt-cache madison age rclone` na base nova) e reconstruir. Se o Debian retirar a versão
+# fixada do repositório, o build falha de propósito: atualize os pins conscientemente.
+ARG PG_IMAGE=postgres:14-bookworm@sha256:a54c8b1e143b22f16b0fd3e249e9297a6f08828a143ee7108b1b5ca51f352765
+FROM ${PG_IMAGE}
+ARG VERSION
+ARG AGE_VERSION=1.1.1-1+b3
+ARG RCLONE_VERSION=1.60.1+dfsg-2+b5
+LABEL org.opencontainers.image.title="openclaw-risk-backup" \
+      org.opencontainers.image.description="Job de backup cifrado (pg_dump | age) da base openclaw_risk, exclusivamente paper trading (ADR-0012)" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.base.name="docker.io/library/postgres:14-bookworm" \
+      com.openclaw-risk-engine.backup.age-version="${AGE_VERSION}" \
+      com.openclaw-risk-engine.backup.rclone-version="${RCLONE_VERSION}"
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends "age=${AGE_VERSION}" "rclone=${RCLONE_VERSION}" \
+    && rm -rf /var/lib/apt/lists/*
+COPY --chmod=0555 scripts/backup/backup-job.sh /usr/local/bin/backup-job.sh
+# O postgres:14 declara VOLUME /var/lib/postgresql/data; backup-prod.sh usa --rm (remove o volume anônimo).
+# Sem USER fixo além do padrão da base: backup-prod.sh passa --user <uid do host> para gravar em /out.
+USER 999:999
+ENTRYPOINT ["/usr/local/bin/backup-job.sh"]

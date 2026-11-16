@@ -1,0 +1,12 @@
+# EXEMPLO — NÃO APLICADO. Vira o arquivo secret `rclone.conf` (0400) dentro de RISK_BACKUP_SECRETS_DIR. NUNCA versionar o real.
+# O nome do remote é FIXO: risk-backup (o job recusa outro nome).
+# Provedor, endpoint, região e credencial: a definir (U4). A credencial de envio deve poder só escrever objetos (PutObject; HEAD/GetObject para a
+# verificação pós-envio), sem listar nem apagar, quando o provedor permitir; a retenção de 7 dias no bucket é regra de ciclo de vida do provedor.
+[risk-backup]
+type = s3
+provider = <a definir>
+env_auth = false
+access_key_id = <a definir>
+secret_access_key = <a definir>
+endpoint = <a definir>
+region = <a definir>

@@ -1,0 +1,4 @@
+# Contexto mínimo da imagem de backup: só scripts/backup/ (o .dockerignore principal exclui scripts/).
+*
+!scripts/backup/
+!scripts/backup/backup-job.sh

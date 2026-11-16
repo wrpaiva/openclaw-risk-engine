@@ -1,0 +1,17 @@
+node_modules
+dist
+build
+coverage
+.env
+.env.*
+!.env.example
+tests
+docs
+.claude
+*.log
+deploy
+scripts
+README-ADR.md
+CLAUDE.md
+vitest.config.ts
+eslint.config.js

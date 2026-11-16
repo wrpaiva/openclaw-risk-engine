@@ -1,0 +1,8 @@
+# EXEMPLO — NÃO APLICADO. Não instale este arquivo sem aprovação do usuário (ADR-0012).
+# Horário, fuso e alvo do alerta de falha: a definir no deploy (U5, U6). O cron do host dispara um contêiner descartável;
+# nada fica rodando entre execuções. O código de saída do script é o sinal de falha (0 OK; 2, 3, 4, 5, 6 = falha; ver docs/operacao/alarmes.md).
+#
+# m h dom mon dow   comando
+# <a definir> <a definir> * * *   /bin/bash /opt/openclaw-risk-engine/scripts/backup-prod.sh <caminho do backup.env> >> <log do cron, a definir> 2>&1
+#
+# O script usa flock (uma execução por vez) e grava só linhas JSON fixas (sem segredos).

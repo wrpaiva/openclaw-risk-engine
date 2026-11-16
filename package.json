@@ -1,0 +1,42 @@
+{
+  "name": "openclaw-risk-engine",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Motor determinístico de autorização de risco exclusivamente para paper trading (SPEC-TRADING-RISK-001)",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "sh scripts/test-integration.sh",
+    "test:contract": "vitest run tests/contract",
+    "check": "sh scripts/check.sh",
+    "test:db": "sh scripts/test-db.sh",
+    "migrate": "sh scripts/migrate.sh",
+    "image:build": "sh scripts/build-image.sh",
+    "image:build:backup": "sh scripts/build-backup-image.sh",
+    "test:e2e": "sh scripts/test-e2e.sh",
+    "test:backup": "bash scripts/test-backup.sh"
+  },
+  "dependencies": {
+    "decimal.js": "^10.6.0",
+    "pg": "^8.23.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.20.5",
+    "@types/pg": "^8.23.1",
+    "eslint": "^10.15.0",
+    "typescript": "~5.9",
+    "typescript-eslint": "^8.72.2",
+    "vitest": "^5.1.0"
+  }
+}

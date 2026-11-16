@@ -1,0 +1,4 @@
+# EXEMPLO — NÃO APLICADO. Vira o arquivo secret `pgpass` (0400): UMA linha, sem '*' nem '\', formato libpq.
+#   host:porta:banco:login:senha
+# O job lê host/porta/banco/login desta linha (nunca a senha) e exige banco = RISK_BACKUP_EXPECTED_DB. Login e host: a definir (U12, U3).
+<host a definir>:<porta>:openclaw_risk:<login de backup a definir>:<senha; gerada no deploy>

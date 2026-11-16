@@ -1,0 +1,79 @@
+# =====================================================================================================
+# NÃO APLICADO / EXEMPLO DOCUMENTAL. Não execute `docker stack deploy` com este arquivo.
+# Nada aqui foi implantado. A implantação depende de aprovação explícita do usuário e da definição dos valores "a definir"
+# (ADR-0011 aceito: rede, nome da rede, anexação do consumidor, sslmode do Postgres). Não cria rede, secret nem serviço.
+# =====================================================================================================
+version: "3.8"
+
+services:
+  risk-engine:
+    image: openclaw-risk-engine:0.1.0   # imagem local (npm run image:build / docker save); sem registry
+    # Sem `ports:` (nenhuma publicação; o Traefik não participa). Bind em todas as interfaces do contêiner (ADR-0011, O2):
+    # ele escuta em TODAS as redes anexadas ao serviço (risco P1). Anexar só a rede transacional dedicada; como o
+    # engine precisa alcançar o Postgres compartilhado, a rede de acesso ao banco é a definir (ver docs/operacao/seguranca.md).
+    user: "1000:1000"
+    read_only: true                     # a app não escreve em disco; sem tmpfs necessário
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      RISK_ENVIRONMENT: PAPER
+      RISK_DATABASE_URL_FILE: /run/secrets/risk_runtime_database_url
+      RISK_PRINCIPALS_FILE: /run/secrets/risk_principals
+      RISK_HTTP_ENABLED: "true"
+      RISK_HTTP_BIND_SCOPE: private-network
+      RISK_HTTP_TRANSPORT: plaintext-encrypted-overlay   # Bearer em texto claro dentro da overlay cifrada (não verificado pelo processo)
+      RISK_HTTP_HOST: 0.0.0.0                            # único curinga aceito, só com private-network
+      # RISK_HTTP_PORT, RISK_LOG_LEVEL, RISK_CLOCK_SKEW_TOLERANCE_MS, RISK_DB_*_MS, RISK_HTTP_MAX_BODY_BYTES,
+      # RISK_HTTP_REQUEST_TIMEOUT_MS, RISK_HTTP_HEADERS_TIMEOUT_MS: a definir (sem defaults no código; ver .env.example).
+      # Não definir RISK_MIGRATION_*: o boot recusa. Não definir nenhuma credencial de exchange/corretora.
+    secrets:
+      - risk_runtime_database_url       # URL do login membro de openclaw_risk_runtime
+      - risk_principals                 # JSON {version:1, principals:[{principalId, kind, tokenSha256}]}; só hashes
+    networks:
+      - risk_transactional
+    # Rede de acesso ao Postgres compartilhado: a definir (decisão no deploy; ver P1 em docs/operacao/seguranca.md).
+    # healthcheck: usa o HEALTHCHECK da imagem (CLI `healthcheck` em /health/live). Valores abaixo a definir:
+    # healthcheck:
+    #   interval: a definir
+    #   timeout: a definir
+    #   retries: a definir
+    #   start_period: a definir
+    # stop_grace_period: a definir   # a app trata SIGTERM (readiness 503, fecha o servidor, encerra o pool)
+    # deploy: réplicas, restart_policy, update_config e rollback_config: a definir
+
+  # One-shot de migração: NUNCA no boot da app; rodado pelo operador com a credencial de MIGRAÇÃO (openclaw_risk_owner).
+  risk-engine-migrate:
+    image: openclaw-risk-engine:0.1.0
+    entrypoint: ["node", "dist/interfaces/cli/main.js", "migrate"]
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      RISK_ENVIRONMENT: PAPER
+      RISK_MIGRATION_DATABASE_URL_FILE: /run/secrets/risk_migration_database_url
+      # RISK_DB_CONNECTION_TIMEOUT_MS, RISK_DB_STATEMENT_TIMEOUT_MS, RISK_DB_LOCK_TIMEOUT_MS: OBRIGATÓRIOS também aqui
+      # (a CLI de migração recusa rodar sem prazos); valores a definir pelo usuário.
+    secrets:
+      - risk_migration_database_url     # URL do login membro de openclaw_risk_owner; separado do runtime
+    # Sem `networks:` da rede transacional: a migração não entra nela. Rede de acesso ao banco: a definir.
+    # deploy.restart_policy: none (execução única); como disparar é decisão do operador, a definir
+
+secrets:
+  # Secrets EXTERNOS: criados fora deste arquivo, pelo operador, após aprovação. Nenhum valor aqui.
+  risk_runtime_database_url:
+    external: true
+  risk_principals:
+    external: true
+  risk_migration_database_url:
+    external: true
+
+networks:
+  risk_transactional:
+    external: true
+    name: a-definir   # nome da rede: a definir; criar/anexar exige aprovação explícita no deploy
+    # Criação (NÃO executar sem aprovação), overlay dedicada, cifrada, não attachable e interna:
+    #   docker network create --driver overlay --opt encrypted --internal <nome-a-definir>
+    # (sem --attachable). Só risk-engine e o consumidor autorizado (OpenClaw; depois o paper executor) entram nela.
