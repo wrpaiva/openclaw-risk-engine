@@ -8,7 +8,7 @@ import { NAME_RE, bkEnv, docker, jobEvents, labelArgs, makeSecrets, makeStubs, m
 
 // T8: credencial S3 RESTRITA. Um segundo gateway versitygw (mesma imagem por digest, IAM interno + sidecar para guardar políticas) é criado só
 // para este arquivo. O usuário de envio só tem s3:PutObject e s3:GetObject (HEAD) no prefixo: SEM ListBucket e SEM DeleteObject.
-// Prova se o job (copyto --no-traverse --immutable + `rclone lsjson <objeto>` de verificação) funciona sem permissão de listar/apagar
+// Prova se o job (HEAD prévio por copyto --dry-run --ignore-existing + copyto --ignore-existing + `rclone lsjson <objeto>` de verificação) funciona sem permissão de listar/apagar
 // e quais operações S3 ele realmente emite. Chaves e bucket FICTÍCIOS, só desta execução.
 const env = bkEnv();
 const ROOT_AK = `root${rand(6)}`;
@@ -166,8 +166,8 @@ describe('credencial S3 só de envio (sem ListBucket e sem Delete)', { timeout: 
     expect(rootList(prefix)).toEqual(['probe.txt']); // o objeto continua lá (delete negado)
   });
 
-  // Mesma lacuna do --immutable (ver BackupFailures.test.ts): com a credencial restrita o objeto remoto de mesmo nome também é sobrescrito.
-  it.fails('LACUNA: com a credencial restrita, objeto remoto pré-existente com o mesmo nome não é sobrescrito', () => {
+  // O HEAD prévio (só s3:GetObject) basta: com a credencial restrita o objeto remoto de mesmo nome não é sobrescrito.
+  it('com a credencial restrita, objeto remoto pré-existente com o mesmo nome não é sobrescrito (5, upload_target_exists)', () => {
     putPolicy(['s3:PutObject', 's3:GetObject']);
     const userSecrets = makeSecrets({ rclone: userConf });
     const prefix = prefixFor();
@@ -179,7 +179,9 @@ describe('credencial S3 só de envio (sem ListBucket e sem Delete)', { timeout: 
     const run = runJob({ out, secrets: userSecrets, stubs, env: { RISK_BACKUP_S3_BUCKET: BUCKET, RISK_BACKUP_S3_PREFIX: prefix } });
     const get = rclone(rootSecrets, ['cat', `risk-backup:${BUCKET}/${prefix}/${name}`]);
     expect(get.stdout, run.stdout).toBe('REMOTO-ORIGINAL');
-    expect(run.code).toBe(5);
+    expect(run.code, run.stdout).toBe(5);
+    expect(jobEvents(run.stdout).map((e) => `${e.event}:${e.file}`)).toContain(`upload_target_exists:${name}`);
+    expect(outFiles(out)).toContain(name); // cópia local mantida
   });
 
   it('só PutObject (sem GetObject/HEAD): comportamento registrado — o job precisa de HEAD para o copyto e para a verificação', () => {

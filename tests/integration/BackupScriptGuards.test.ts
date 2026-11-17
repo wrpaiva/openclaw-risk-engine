@@ -85,6 +85,14 @@ interface Fixture {
   readonly values: Record<string, string>;
 }
 let seq = 0;
+// Valores FICTÍCIOS de teste (não são os de produção, que são decisão do deploy U5).
+const RCLONE_VALUES: Record<string, string> = {
+  RISK_BACKUP_RCLONE_CONTIMEOUT: '3s',
+  RISK_BACKUP_RCLONE_TIMEOUT: '10s',
+  RISK_BACKUP_RCLONE_RETRIES: '2',
+  RISK_BACKUP_RCLONE_LOW_LEVEL_RETRIES: '3',
+};
+const RCLONE_KEYS = Object.keys(RCLONE_VALUES);
 const FILES: Record<string, string> = {
   pgpass: `db.internal:5432:openclaw_risk_zz9:risk_backup_login:${DB_PASS}\n`,
   age_recipients: `${AGE_RECIPIENT}\n`,
@@ -110,6 +118,7 @@ function fixture(overrides: Record<string, string | null> = {}): Fixture {
     RISK_BACKUP_S3_PREFIX: 'prefix-zz9/sub',
     RISK_BACKUP_IMAGE: 'openclaw-risk-backup:zz9',
     RISK_BACKUP_DOCKER_NETWORK: 'net-zz9',
+    ...RCLONE_VALUES,
   };
   for (const [k, v] of Object.entries(overrides)) {
     if (v === null) Reflect.deleteProperty(values, k);
@@ -144,14 +153,52 @@ describe('backup-prod.sh: recusas de configuração (código 2, nenhuma chamada 
     expect(calls()).toBe('');
   });
 
-  it('chave obrigatória ausente (cada uma das 7) → 2', () => {
-    for (const k of ['RISK_BACKUP_EXPECTED_DB', 'RISK_BACKUP_DIR', 'RISK_BACKUP_SECRETS_DIR', 'RISK_BACKUP_S3_BUCKET', 'RISK_BACKUP_S3_PREFIX', 'RISK_BACKUP_IMAGE', 'RISK_BACKUP_DOCKER_NETWORK']) {
+  it('chave obrigatória ausente (cada uma das 11) → 2', () => {
+    for (const k of ['RISK_BACKUP_EXPECTED_DB', 'RISK_BACKUP_DIR', 'RISK_BACKUP_SECRETS_DIR', 'RISK_BACKUP_S3_BUCKET', 'RISK_BACKUP_S3_PREFIX', 'RISK_BACKUP_IMAGE', 'RISK_BACKUP_DOCKER_NETWORK', ...RCLONE_KEYS]) {
       const f = fixture({ [k]: null });
       const r = backupProd(f.conf);
       expect(r.code, k).toBe(2);
       expect(r.out, k).toMatch(/incompleta/);
     }
     expect(calls()).toBe('');
+  });
+
+  // Cada uma das 4 variáveis do rclone: ausente (já coberto acima) e inválida → 2, mensagem nomeando a variável, nenhuma chamada docker.
+  const RCLONE_BAD: readonly (readonly [string, readonly string[]])[] = [
+    ['RISK_BACKUP_RCLONE_CONTIMEOUT', ['1000000s', '99999999999999999999s', '0', '0s', '5', '5h', '-1', ' 5s', '5 s', '1e3s', '5S', '05s', 'abc', '5s5s', '5.5s', '+5s', '5s;id']],
+    ['RISK_BACKUP_RCLONE_TIMEOUT', ['1000000s', '99999999999999999999s', '0', '0m', '5', '5h', '-1', ' 5s', '5 s', '1e3s', '5S', '05s', 'abc', '5s5s', '5.5s', '+5s', '5s;id']],
+    ['RISK_BACKUP_RCLONE_RETRIES', ['10000', '99999999999999999999', '0', '00', '-1', '1.5', '1e3', '5s', ' 5', '5 ', '05', 'abc', '+1', '0x5']],
+    ['RISK_BACKUP_RCLONE_LOW_LEVEL_RETRIES', ['10000', '99999999999999999999', '0', '00', '-1', '1.5', '1e3', '5s', ' 5', '5 ', '05', 'abc', '+1', '0x5']],
+  ];
+  it.each(RCLONE_BAD)('%s inválido → 2 "recusado: <VAR> inválido", sem docker run', (k, bads) => {
+    for (const v of bads) {
+      reset();
+      // Linha com espaço/aspas é recusada antes por outra regra (também 2); o essencial é nunca chegar ao docker run.
+      const f = fixture({ [k]: v });
+      const r = backupProd(f.conf);
+      expect(r.code, `${k}=${JSON.stringify(v)}`).toBe(2);
+      expect(runCalls(), `${k}=${JSON.stringify(v)}`).toEqual([]);
+      expect(leftovers(f)).toEqual([]);
+    }
+  });
+  it.each(RCLONE_BAD)('%s com valor sem espaço e sintaticamente inválido cita a variável na recusa', (k, bads) => {
+    for (const v of bads.filter((x) => !/\s|;/.test(x))) {
+      const f = fixture({ [k]: v });
+      const r = backupProd(f.conf);
+      expect(r.code, v).toBe(2);
+      expect(r.out, v).toContain(`recusado: ${k} inválido`);
+    }
+  });
+
+  it('valores válidos limítrofes (1ms, 1s, 1m, 999999s; retries 1, 100 e 9999) são aceitos e repassados', () => {
+    for (const [ct, t, rt, ll] of [['1ms', '1s', '1', '1'], ['1m', '999999s', '100', '100'], ['1s', '1s', '9999', '9999']] as const) {
+      reset();
+      const f = fixture({ RISK_BACKUP_RCLONE_CONTIMEOUT: ct, RISK_BACKUP_RCLONE_TIMEOUT: t, RISK_BACKUP_RCLONE_RETRIES: rt, RISK_BACKUP_RCLONE_LOW_LEVEL_RETRIES: ll });
+      expect(backupProd(f.conf).code).toBe(0);
+      const env = readFileSync(envLog, 'utf8');
+      expect(env).toContain(`RISK_BACKUP_RCLONE_CONTIMEOUT=${ct}`);
+      expect(env).toContain(`RISK_BACKUP_RCLONE_LOW_LEVEL_RETRIES=${ll}`);
+    }
   });
 
   it('chave presente com valor vazio → 2', () => {
@@ -351,18 +398,19 @@ describe('backup-prod.sh: docker run (stub)', () => {
     expect(line).toMatch(new RegExp(`--user ${process.getuid?.()}:${process.getgid?.()} `));
     expect(line).not.toMatch(/--privileged|--network host|docker\.sock|--tmpfs|--cap-add|--env-file/);
     // `-e NOME` sem "=valor".
-    expect([...line.matchAll(/ -e (\S+)/g)].map((m) => m[1]).sort()).toEqual(['RISK_BACKUP_EXPECTED_DB', 'RISK_BACKUP_S3_BUCKET', 'RISK_BACKUP_S3_PREFIX']);
+    expect([...line.matchAll(/ -e (\S+)/g)].map((m) => m[1]).sort()).toEqual(['RISK_BACKUP_EXPECTED_DB', ...RCLONE_KEYS, 'RISK_BACKUP_S3_BUCKET', 'RISK_BACKUP_S3_PREFIX'].sort());
     // Nenhum segredo (senha do banco, secret do S3, recipient, conteúdo de arquivos) em argumentos nem na saída do script.
     for (const secret of [DB_PASS, S3_SECRET, 'AKIDZZ9', AGE_RECIPIENT, 'risk_backup_login', 'db.internal']) {
       expect(calls(), secret).not.toContain(secret);
       expect(r.out, secret).not.toContain(secret);
     }
-    // O ambiente do `docker run` tem só as 3 variáveis não secretas e o fd do lock não vaza.
+    // O ambiente do `docker run` tem só as variáveis não secretas (3 + 4 do rclone) e o fd do lock não vaza.
     const env = readFileSync(envLog, 'utf8');
     expect(env).toContain('RISK_BACKUP_EXPECTED_DB=openclaw_risk_zz9');
     expect(env).toContain('RISK_BACKUP_S3_BUCKET=bucket-zz9');
     expect(env).toContain('RISK_BACKUP_S3_PREFIX=prefix-zz9/sub');
-    expect(env.split('\n').filter((l) => l.startsWith('RISK_BACKUP_')).map((l) => l.split('=')[0]).sort()).toEqual(['RISK_BACKUP_EXPECTED_DB', 'RISK_BACKUP_S3_BUCKET', 'RISK_BACKUP_S3_PREFIX']);
+    expect(env.split('\n').filter((l) => l.startsWith('RISK_BACKUP_')).map((l) => l.split('=')[0]).sort()).toEqual(['RISK_BACKUP_EXPECTED_DB', ...RCLONE_KEYS, 'RISK_BACKUP_S3_BUCKET', 'RISK_BACKUP_S3_PREFIX'].sort());
+    for (const [k, v] of Object.entries(RCLONE_VALUES)) expect(env).toContain(`${k}=${v}`);
     expect(env).toContain('FD9=closed');
     expect(env).not.toContain(DB_PASS);
   });

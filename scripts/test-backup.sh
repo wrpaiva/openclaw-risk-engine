@@ -36,6 +36,8 @@
 #   RISK_BACKUP_TEST_IMAGE            imagem do job (openclaw-risk-backup:<version>)
 #   RISK_BACKUP_TEST_PG_IMAGE / RISK_BACKUP_TEST_S3_IMAGE   imagens por digest
 #   RISK_BACKUP_TEST_WORKDIR          diretório do ciclo (0700), apagado no fim; coloque ali os artefatos dos testes
+#   RISK_BACKUP_TEST_RCLONE_CONTIMEOUT / _TIMEOUT / _RETRIES / _LOW_LEVEL_RETRIES   valores de TESTE (pequenos) gravados no CONFIG_FILE; o job exige
+#                                     RISK_BACKUP_RCLONE_{CONTIMEOUT,TIMEOUT,RETRIES,LOW_LEVEL_RETRIES} (sem default): ao rodar a imagem direto, passe -e com estes valores
 #   RISK_BACKUP_TEST_BACKUP_DIR       diretório de saída dos backups cifrados (0700, vazio); é o RISK_BACKUP_DIR de backup-prod.sh
 #   RISK_BACKUP_TEST_SECRETS_DIR      0700, arquivos 0400: pgpass (host = alias da rede), age_recipients (chave pública de teste), rclone.conf (remote risk-backup)
 #   RISK_BACKUP_TEST_CONFIG_FILE      backup.env VÁLIDO para backup-prod.sh (usa os diretórios, imagem, rede, banco, bucket e prefixo acima)
@@ -50,7 +52,8 @@
 #     docker run --rm --label "$RISK_BACKUP_TEST_LABEL" --label "$RISK_BACKUP_TEST_GENERIC_LABEL" --user "$(id -u):$(id -g)"
 #       --network "$RISK_BACKUP_TEST_NETWORK" -v <dir de saída>:/out -v <secrets>:/run/secrets:ro -v <stubs>:/stubs:ro
 #       -e PATH=/stubs:/usr/lib/postgresql/14/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-#       -e RISK_BACKUP_EXPECTED_DB=... -e RISK_BACKUP_S3_BUCKET=... -e RISK_BACKUP_S3_PREFIX=... --entrypoint /usr/local/bin/backup-job.sh "$RISK_BACKUP_TEST_IMAGE"
+#       -e RISK_BACKUP_EXPECTED_DB=... -e RISK_BACKUP_S3_BUCKET=... -e RISK_BACKUP_S3_PREFIX=...
+#       -e RISK_BACKUP_RCLONE_CONTIMEOUT=... -e RISK_BACKUP_RCLONE_TIMEOUT=... -e RISK_BACKUP_RCLONE_RETRIES=... -e RISK_BACKUP_RCLONE_LOW_LEVEL_RETRIES=... --entrypoint /usr/local/bin/backup-job.sh "$RISK_BACKUP_TEST_IMAGE"
 # Restauração cifrada: RISK_RESTORE_URL="$RISK_BACKUP_TEST_ADMIN_URL_BASE/<novo>_test" RISK_RESTORE_AGE_IDENTITY_FILE="$RISK_BACKUP_TEST_AGE_IDENTITY_FILE"
 #   bash scripts/restore-encrypted-local.sh <arquivo.dump.age>   (o banco <novo>_test deve existir e estar vazio; crie-o via ADMIN_URL_BASE/postgres).
 # Se tests/backup não existir, o ciclo (infra, bucket, grants, chaves, teardown) roda sem testes.
@@ -79,6 +82,11 @@ PREFIX=risk-backup-test
 ADMIN=risk_backup_test_admin
 BACKUP_LOGIN=risk_backup_test_login
 MIGRATOR=risk_backup_test_migrator
+# Valores de TESTE (não são valores de produção; U5 decide os de produção).
+RC_CONTIMEOUT=3s
+RC_TIMEOUT=10s
+RC_RETRIES=1
+RC_LL_RETRIES=1
 
 for v in "$DB_PORT" "$S3_PORT"; do [[ "$v" =~ ^[0-9]+$ && "$v" -ge 1024 && "$v" -le 65535 ]] || { echo "porta inválida" >&2; exit 1; }; done
 [[ "$DB_PORT" != "$S3_PORT" ]] || { echo "RISK_BACKUP_TEST_DB_PORT e RISK_BACKUP_TEST_S3_PORT devem ser diferentes" >&2; exit 1; }
@@ -197,6 +205,10 @@ RISK_BACKUP_S3_BUCKET=$BUCKET
 RISK_BACKUP_S3_PREFIX=$PREFIX
 RISK_BACKUP_IMAGE=$IMAGE
 RISK_BACKUP_DOCKER_NETWORK=$NET_NAME
+RISK_BACKUP_RCLONE_CONTIMEOUT=$RC_CONTIMEOUT
+RISK_BACKUP_RCLONE_TIMEOUT=$RC_TIMEOUT
+RISK_BACKUP_RCLONE_RETRIES=$RC_RETRIES
+RISK_BACKUP_RCLONE_LOW_LEVEL_RETRIES=$RC_LL_RETRIES
 CONF
 
 # ---- bucket de teste (criado fora do job: o job nunca cria bucket) ----
@@ -220,6 +232,8 @@ export RISK_BACKUP_TEST_REPO_ROOT="$REPO_ROOT" RISK_BACKUP_TEST_LABEL="$LABEL_KV
   RISK_BACKUP_TEST_S3_ENDPOINT="http://127.0.0.1:${S3_PORT}" RISK_BACKUP_TEST_S3_ENDPOINT_NET="http://${S3_ALIAS}:7070" \
   RISK_BACKUP_TEST_S3_ACCESS_KEY="$S3_ACCESS" RISK_BACKUP_TEST_S3_SECRET_KEY="$S3_SECRET" \
   RISK_BACKUP_TEST_S3_BUCKET="$BUCKET" RISK_BACKUP_TEST_S3_PREFIX="$PREFIX" \
+  RISK_BACKUP_TEST_RCLONE_CONTIMEOUT="$RC_CONTIMEOUT" RISK_BACKUP_TEST_RCLONE_TIMEOUT="$RC_TIMEOUT" \
+  RISK_BACKUP_TEST_RCLONE_RETRIES="$RC_RETRIES" RISK_BACKUP_TEST_RCLONE_LOW_LEVEL_RETRIES="$RC_LL_RETRIES" \
   RISK_BACKUP_TEST_BACKUP_LOGIN="$BACKUP_LOGIN" RISK_BACKUP_TEST_BACKUP_PASSWORD="$BACKUP_PW" \
   RISK_BACKUP_TEST_IMAGE="$IMAGE" RISK_BACKUP_TEST_PG_IMAGE="$PG_IMAGE" RISK_BACKUP_TEST_S3_IMAGE="$S3_IMAGE" \
   RISK_BACKUP_TEST_WORKDIR="$WORK" RISK_BACKUP_TEST_BACKUP_DIR="$BACKUP_DIR" RISK_BACKUP_TEST_SECRETS_DIR="$SECRETS_DIR" \

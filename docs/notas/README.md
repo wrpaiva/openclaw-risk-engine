@@ -11,3 +11,4 @@ As notas descrevem o que foi entregue e o que ficou pendente; a SPEC e os ADRs c
 | 2.4 — Adaptador OpenClaw e integração paper-only | [etapa-2.4.md](etapa-2.4.md) | Aprovada (2026-11-14) |
 | 2.5 — Empacotamento e operação | [etapa-2.5.md](etapa-2.5.md) · [regressao-final.md](regressao-final.md) | Aprovada (2026-11-15) |
 | ADR-0011 — `RISK_HTTP_BIND_SCOPE` (O2) | [adr-0011-implementacao.md](adr-0011-implementacao.md) | Aprovada (2026-11-15) |
+| ADR-0012 — job de backup de produção | [adr-0012-implementacao.md](adr-0012-implementacao.md) | Aprovado (2026-11-16) |

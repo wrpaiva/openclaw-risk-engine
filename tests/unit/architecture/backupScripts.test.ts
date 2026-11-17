@@ -122,8 +122,38 @@ describe('ADR-0012: scripts de backup e restauração', () => {
     }
     const job = code(read('scripts/backup/backup-job.sh'));
     expect(job).toContain('--s3-no-check-bucket');
-    expect(job).toContain('--immutable');
+    // `--immutable` não protege contra sobrescrita no rclone 1.60.1: a barreira é o HEAD prévio (probe) + --ignore-existing.
+    expect(job).not.toContain('--immutable');
+    expect(job).toContain('--ignore-existing');
+    expect(job).toContain('--error-on-no-transfer');
+    expect(job).toMatch(/copyto --dry-run /);
     expect(job).not.toMatch(/--delete-|--backup-dir|--s3-no-head\b|--overwrite/);
+  });
+
+  it('backup-job.sh: toda chamada rclone leva --contimeout/--timeout/--retries/--low-level-retries (direto ou via RC_BASE/RC_FLAGS), sem default', () => {
+    const job = code(read('scripts/backup/backup-job.sh'));
+    const base = /^RC_BASE=\(([^)]*)\)/m.exec(job)?.[1] ?? '';
+    for (const [flag, v] of [['--contimeout', 'CONTIMEOUT'], ['--timeout', 'RCTIMEOUT'], ['--retries', 'RETRIES'], ['--low-level-retries', 'LL_RETRIES']] as const) {
+      expect(base, flag).toContain(`${flag} "$${v}"`);
+    }
+    // RC_FLAGS deriva de RC_BASE; cada chamada rclone usa RC_BASE ou RC_FLAGS.
+    expect(job).toMatch(/^RC_FLAGS=\("\$\{RC_BASE\[@\]\}"\)/m);
+    const calls = job.split('\n').filter((l) => /(^|[\s|;(])rclone\s+[a-z]/.test(l) && !l.includes('command -v'));
+    expect(calls.length).toBeGreaterThanOrEqual(3);
+    for (const l of calls) expect(l, l).toMatch(/\$\{RC_(BASE|FLAGS)\[@\]\}/);
+    // Sem default: a variável vem de ${VAR:-} e é validada por regex antes de qualquer conexão.
+    for (const v of ['CONTIMEOUT', 'TIMEOUT', 'RETRIES', 'LOW_LEVEL_RETRIES']) expect(job).toContain(`\${RISK_BACKUP_RCLONE_${v}:-}`);
+    expect(job).toContain('^[1-9][0-9]{0,5}(ms|s|m)$');
+    expect(job).toContain('^[1-9][0-9]{0,3}$');
+    expect(job).not.toMatch(/RISK_BACKUP_RCLONE_\w+:-[^}]/); // nenhum valor padrão
+    expect(job.indexOf('config_invalid_rclone_low_level_retries')).toBeLessThan(job.indexOf('psql -X'));
+    expect(job).toContain('has_any_column_privilege(current_user, c.oid, \'INSERT\')');
+    expect(job).toContain('has_any_column_privilege(current_user, c.oid, \'UPDATE\')');
+    expect(job).toContain("has_schema_privilege(current_user, n.oid, 'CREATE')");
+    expect(job).toContain("has_database_privilege(current_user, current_database(), 'CREATE')");
+    expect(job).toContain('rolcreaterole or rolcreatedb or rolreplication or rolbypassrls');
+    expect(job).toMatch(/^\s*rclone copyto --error-on-no-transfer "\$\{RC_FLAGS\[@\]\}"/m);
+    expect(job).toContain('has_sequence_privilege(current_user, c.oid, \'UPDATE\')');
   });
 
   it('backup-prod.sh: docker run endurecido (read-only, cap-drop ALL, no-new-privileges, pull never), segredos ro, sem env com valor', () => {
@@ -137,7 +167,9 @@ describe('ADR-0012: scripts de backup e restauração', () => {
     expect(r).not.toMatch(/--privileged|--network host|--network=host|docker\.sock|--tmpfs|--cap-add|--pid|--ipc|--device/);
     // `-e` só por nome (valor viaja pelo ambiente do processo), nunca -e NOME=valor.
     const envs = [...r.matchAll(/\s-e\s+(\S+)/g)].map((m) => m[1] as string);
-    expect(envs.sort()).toEqual(['RISK_BACKUP_EXPECTED_DB', 'RISK_BACKUP_S3_BUCKET', 'RISK_BACKUP_S3_PREFIX']);
+    expect(envs.sort()).toEqual(
+      ['RISK_BACKUP_EXPECTED_DB', 'RISK_BACKUP_RCLONE_CONTIMEOUT', 'RISK_BACKUP_RCLONE_LOW_LEVEL_RETRIES', 'RISK_BACKUP_RCLONE_RETRIES', 'RISK_BACKUP_RCLONE_TIMEOUT', 'RISK_BACKUP_S3_BUCKET', 'RISK_BACKUP_S3_PREFIX'],
+    );
     expect(r).not.toMatch(/--env-file|--env\b/);
     // O fd do lock não vaza ao contêiner e o lock é não bloqueante.
     expect(r).toMatch(/9>&-\s*$/);
@@ -263,8 +295,11 @@ describe('ADR-0012: exemplos em deploy/backup', () => {
       .filter((l) => /^[A-Z]/.test(l))
       .map((l) => l.split('=')[0]);
     expect(keys.sort()).toEqual(
-      ['RISK_BACKUP_DIR', 'RISK_BACKUP_DOCKER_NETWORK', 'RISK_BACKUP_EXPECTED_DB', 'RISK_BACKUP_IMAGE', 'RISK_BACKUP_S3_BUCKET', 'RISK_BACKUP_S3_PREFIX', 'RISK_BACKUP_SECRETS_DIR'].sort(),
+      ['RISK_BACKUP_DIR', 'RISK_BACKUP_DOCKER_NETWORK', 'RISK_BACKUP_EXPECTED_DB', 'RISK_BACKUP_IMAGE', 'RISK_BACKUP_RCLONE_CONTIMEOUT', 'RISK_BACKUP_RCLONE_LOW_LEVEL_RETRIES', 'RISK_BACKUP_RCLONE_RETRIES', 'RISK_BACKUP_RCLONE_TIMEOUT', 'RISK_BACKUP_S3_BUCKET', 'RISK_BACKUP_S3_PREFIX', 'RISK_BACKUP_SECRETS_DIR'].sort(),
     );
+    // U5: os 4 valores rclone de produção são decisão do deploy; o exemplo não pode trazer número inventado.
+    const example = read('deploy/backup/backup.env.example');
+    for (const k of ['CONTIMEOUT', 'TIMEOUT', 'RETRIES', 'LOW_LEVEL_RETRIES']) expect(example).toMatch(new RegExp(`^RISK_BACKUP_RCLONE_${k}=<a definir>$`, 'm'));
     expect(read('deploy/backup/rclone.conf.example')).toMatch(/^\[risk-backup\]$/m);
   });
 });

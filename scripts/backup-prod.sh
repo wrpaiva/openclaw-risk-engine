@@ -12,6 +12,8 @@
 #   RISK_BACKUP_S3_PREFIX         prefixo no bucket (a definir no deploy)
 #   RISK_BACKUP_IMAGE             imagem local (docker image inspect precisa achá-la; --pull never)
 #   RISK_BACKUP_DOCKER_NETWORK    rede Docker existente que alcança o PostgreSQL e o S3 (a definir no deploy)
+#   RISK_BACKUP_RCLONE_CONTIMEOUT / RISK_BACKUP_RCLONE_TIMEOUT   duração rclone (^[1-9][0-9]{0,5}(ms|s|m)$), sem default (valores: decisão U5 do deploy)
+#   RISK_BACKUP_RCLONE_RETRIES / RISK_BACKUP_RCLONE_LOW_LEVEL_RETRIES   inteiros >= 1 (^[1-9][0-9]{0,3}$), sem default (U5)
 # Segredos NUNCA em argv/env/log: vão por arquivos montados somente leitura em /run/secrets do contêiner.
 # Códigos de saída: 0 OK | 2 configuração recusada (nada executado) | 3 outra execução em andamento (flock) | 4 falha de dump/cifragem/
 #   publicação local, ou falha do docker | 5 cópia local OK, upload/verificação falhou | 6 retenção local falhou com backup OK.
@@ -33,11 +35,11 @@ while IFS= read -r line || [[ -n "$line" ]]; do
 done <"$CONF"
 for k in "${!CFG[@]}"; do
   case "$k" in
-    RISK_BACKUP_EXPECTED_DB|RISK_BACKUP_DIR|RISK_BACKUP_SECRETS_DIR|RISK_BACKUP_S3_BUCKET|RISK_BACKUP_S3_PREFIX|RISK_BACKUP_IMAGE|RISK_BACKUP_DOCKER_NETWORK) ;;
+    RISK_BACKUP_EXPECTED_DB|RISK_BACKUP_DIR|RISK_BACKUP_SECRETS_DIR|RISK_BACKUP_S3_BUCKET|RISK_BACKUP_S3_PREFIX|RISK_BACKUP_IMAGE|RISK_BACKUP_DOCKER_NETWORK|RISK_BACKUP_RCLONE_CONTIMEOUT|RISK_BACKUP_RCLONE_TIMEOUT|RISK_BACKUP_RCLONE_RETRIES|RISK_BACKUP_RCLONE_LOW_LEVEL_RETRIES) ;;
     *) echo "recusado: chave desconhecida na configuração" >&2; exit 2 ;;
   esac
 done
-for k in RISK_BACKUP_EXPECTED_DB RISK_BACKUP_DIR RISK_BACKUP_SECRETS_DIR RISK_BACKUP_S3_BUCKET RISK_BACKUP_S3_PREFIX RISK_BACKUP_IMAGE RISK_BACKUP_DOCKER_NETWORK; do
+for k in RISK_BACKUP_EXPECTED_DB RISK_BACKUP_DIR RISK_BACKUP_SECRETS_DIR RISK_BACKUP_S3_BUCKET RISK_BACKUP_S3_PREFIX RISK_BACKUP_IMAGE RISK_BACKUP_DOCKER_NETWORK RISK_BACKUP_RCLONE_CONTIMEOUT RISK_BACKUP_RCLONE_TIMEOUT RISK_BACKUP_RCLONE_RETRIES RISK_BACKUP_RCLONE_LOW_LEVEL_RETRIES; do
   [[ -n "${CFG[$k]:-}" ]] || { echo "recusado: configuração incompleta ($k)" >&2; exit 2; }
 done
 DB=${CFG[RISK_BACKUP_EXPECTED_DB]}
@@ -52,6 +54,14 @@ NETWORK=${CFG[RISK_BACKUP_DOCKER_NETWORK]}
 [[ "$PREFIX" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ && "$PREFIX" != *..* ]] || { echo "recusado: prefixo inválido" >&2; exit 2; }
 [[ "$IMAGE" =~ ^[A-Za-z0-9][A-Za-z0-9._/:@-]*$ ]] || { echo "recusado: imagem inválida" >&2; exit 2; }
 [[ "$NETWORK" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo "recusado: rede inválida" >&2; exit 2; }
+RC_CONTIMEOUT=${CFG[RISK_BACKUP_RCLONE_CONTIMEOUT]}
+RC_TIMEOUT=${CFG[RISK_BACKUP_RCLONE_TIMEOUT]}
+RC_RETRIES=${CFG[RISK_BACKUP_RCLONE_RETRIES]}
+RC_LL_RETRIES=${CFG[RISK_BACKUP_RCLONE_LOW_LEVEL_RETRIES]}
+[[ "$RC_CONTIMEOUT" =~ ^[1-9][0-9]{0,5}(ms|s|m)$ ]] || { echo "recusado: RISK_BACKUP_RCLONE_CONTIMEOUT inválido" >&2; exit 2; }
+[[ "$RC_TIMEOUT" =~ ^[1-9][0-9]{0,5}(ms|s|m)$ ]] || { echo "recusado: RISK_BACKUP_RCLONE_TIMEOUT inválido" >&2; exit 2; }
+[[ "$RC_RETRIES" =~ ^[1-9][0-9]{0,3}$ ]] || { echo "recusado: RISK_BACKUP_RCLONE_RETRIES inválido" >&2; exit 2; }
+[[ "$RC_LL_RETRIES" =~ ^[1-9][0-9]{0,3}$ ]] || { echo "recusado: RISK_BACKUP_RCLONE_LOW_LEVEL_RETRIES inválido" >&2; exit 2; }
 
 UID_NOW=$(id -u)
 check_dir() { # caminho modo-esperado
@@ -86,13 +96,16 @@ trap cleanup EXIT
 trap 'exit 130' INT TERM
 if [[ -n "$(docker ps -a -q --filter "name=^${NAME}\$")" ]]; then echo "recusado: contêiner $NAME já existe" >&2; exit 2; fi
 
-export RISK_BACKUP_EXPECTED_DB="$DB" RISK_BACKUP_S3_BUCKET="$BUCKET" RISK_BACKUP_S3_PREFIX="$PREFIX"
+export RISK_BACKUP_EXPECTED_DB="$DB" RISK_BACKUP_S3_BUCKET="$BUCKET" RISK_BACKUP_S3_PREFIX="$PREFIX" \
+  RISK_BACKUP_RCLONE_CONTIMEOUT="$RC_CONTIMEOUT" RISK_BACKUP_RCLONE_TIMEOUT="$RC_TIMEOUT" \
+  RISK_BACKUP_RCLONE_RETRIES="$RC_RETRIES" RISK_BACKUP_RCLONE_LOW_LEVEL_RETRIES="$RC_LL_RETRIES"
 set +e
 docker run --rm --pull never --name "$NAME" --label "$LABEL" \
   --user "$UID_NOW:$(id -g)" --read-only --cap-drop ALL --security-opt no-new-privileges \
   --network "$NETWORK" \
   -v "$DIR:/out" -v "$SECRETS:/run/secrets:ro" \
   -e RISK_BACKUP_EXPECTED_DB -e RISK_BACKUP_S3_BUCKET -e RISK_BACKUP_S3_PREFIX \
+  -e RISK_BACKUP_RCLONE_CONTIMEOUT -e RISK_BACKUP_RCLONE_TIMEOUT -e RISK_BACKUP_RCLONE_RETRIES -e RISK_BACKUP_RCLONE_LOW_LEVEL_RETRIES \
   --entrypoint /usr/local/bin/backup-job.sh "$IMAGE" 9>&-
 rc=$?
 set -e

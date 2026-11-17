@@ -38,7 +38,12 @@ export interface BackupEnv {
   readonly identityWrongFile: string;
   readonly recipient: string;
   readonly recipientWrong: string;
+  /** Valores de TESTE (pequenos) das 4 variáveis rclone obrigatórias do job, exportados por scripts/test-backup.sh. */
+  readonly rclone: Readonly<Record<RcloneVar, string>>;
 }
+
+export const RCLONE_VARS = ['RISK_BACKUP_RCLONE_CONTIMEOUT', 'RISK_BACKUP_RCLONE_TIMEOUT', 'RISK_BACKUP_RCLONE_RETRIES', 'RISK_BACKUP_RCLONE_LOW_LEVEL_RETRIES'] as const;
+export type RcloneVar = (typeof RCLONE_VARS)[number];
 
 function required(name: string): string {
   const v = process.env[name];
@@ -80,6 +85,12 @@ export function bkEnv(): BackupEnv {
     identityWrongFile: required('RISK_BACKUP_TEST_AGE_IDENTITY_WRONG_FILE'),
     recipient: required('RISK_BACKUP_TEST_AGE_RECIPIENT'),
     recipientWrong: required('RISK_BACKUP_TEST_AGE_RECIPIENT_WRONG'),
+    rclone: {
+      RISK_BACKUP_RCLONE_CONTIMEOUT: required('RISK_BACKUP_TEST_RCLONE_CONTIMEOUT'),
+      RISK_BACKUP_RCLONE_TIMEOUT: required('RISK_BACKUP_TEST_RCLONE_TIMEOUT'),
+      RISK_BACKUP_RCLONE_RETRIES: required('RISK_BACKUP_TEST_RCLONE_RETRIES'),
+      RISK_BACKUP_RCLONE_LOW_LEVEL_RETRIES: required('RISK_BACKUP_TEST_RCLONE_LOW_LEVEL_RETRIES'),
+    },
   };
   const u = new URL(e.adminUrl);
   if (u.hostname !== '127.0.0.1' || !u.pathname.endsWith('_test') || !e.db.endsWith('_test')) {
@@ -166,6 +177,7 @@ export function makeConfig(over: Record<string, string> = {}, secretsOverrides?:
     RISK_BACKUP_S3_PREFIX: prefix,
     RISK_BACKUP_IMAGE: e.image,
     RISK_BACKUP_DOCKER_NETWORK: e.network,
+    ...e.rclone,
     ...over,
   };
   const file = join(tmpDir('cfg'), 'backup.env');
@@ -219,12 +231,15 @@ export interface JobOptions {
   /** Diretório extra montado em /marks (leitura/escrita) para os stubs registrarem chamadas. */
   readonly marks?: string;
   readonly env?: Record<string, string>;
+  /** Variáveis (de `env` ou dos padrões do ciclo) a NÃO passar ao contêiner (teste de variável ausente). */
+  readonly omit?: readonly string[];
   readonly network?: string;
 }
 /** Executa backup-job.sh direto na imagem (sem backup-prod.sh), com as labels do ciclo para o teardown. */
 export function runJob(o: JobOptions, timeoutMs = 240_000): Run {
   const e = bkEnv();
-  const env: Record<string, string> = { RISK_BACKUP_EXPECTED_DB: e.db, RISK_BACKUP_S3_BUCKET: e.bucket, RISK_BACKUP_S3_PREFIX: `${e.prefix}/${rand(4)}`, ...o.env };
+  const env: Record<string, string> = { RISK_BACKUP_EXPECTED_DB: e.db, RISK_BACKUP_S3_BUCKET: e.bucket, RISK_BACKUP_S3_PREFIX: `${e.prefix}/${rand(4)}`, ...e.rclone, ...o.env };
+  for (const k of o.omit ?? []) Reflect.deleteProperty(env, k);
   const args = [
     'run', '--rm', '--pull', 'never', ...labelArgs(), '--user', `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
     '--network', o.network ?? e.network, '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',

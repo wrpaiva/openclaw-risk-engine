@@ -11,6 +11,8 @@
 #   pgpass          uma linha host:porta:banco:login:senha (sem '*' nem '\'); host/porta/login são lidos daqui, a senha não é lida pelo job
 #   age_recipients  um ou mais recipients públicos `age1...` (um por linha, sem comentários)
 #   rclone.conf     contém a seção [risk-backup] (remote S3 de nome fixo)
+#   RISK_BACKUP_RCLONE_CONTIMEOUT / RISK_BACKUP_RCLONE_TIMEOUT   duração rclone (^[1-9][0-9]{0,5}(ms|s|m)$); valores de produção a definir (U5)
+#   RISK_BACKUP_RCLONE_RETRIES / RISK_BACKUP_RCLONE_LOW_LEVEL_RETRIES   inteiros >= 1 (^[1-9][0-9]{0,3}$; 0 recusado: --retries 0 não é "sem retry" em todas as versões e a escolha deve ser explícita); a definir (U5)
 # Diretório de saída: /out (volume do host, 0700). Ferramentas são chamadas pelo nome simples (PATH): testes podem
 # injetar stubs de pg_dump/age/rclone/date por PATH.
 #
@@ -45,6 +47,14 @@ PREFIX=${RISK_BACKUP_S3_PREFIX:-}
 [[ "$BUCKET" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && "$BUCKET" != *..* ]] || refuse config_invalid_bucket
 [[ "$PREFIX" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ && "$PREFIX" != *..* ]] || refuse config_invalid_prefix
 [[ -d "$OUT_DIR" && ! -L "$OUT_DIR" && -w "$OUT_DIR" ]] || refuse config_invalid_out_dir
+CONTIMEOUT=${RISK_BACKUP_RCLONE_CONTIMEOUT:-}
+RCTIMEOUT=${RISK_BACKUP_RCLONE_TIMEOUT:-}
+RETRIES=${RISK_BACKUP_RCLONE_RETRIES:-}
+LL_RETRIES=${RISK_BACKUP_RCLONE_LOW_LEVEL_RETRIES:-}
+[[ "$CONTIMEOUT" =~ ^[1-9][0-9]{0,5}(ms|s|m)$ ]] || refuse config_invalid_rclone_contimeout
+[[ "$RCTIMEOUT" =~ ^[1-9][0-9]{0,5}(ms|s|m)$ ]] || refuse config_invalid_rclone_timeout
+[[ "$RETRIES" =~ ^[1-9][0-9]{0,3}$ ]] || refuse config_invalid_rclone_retries
+[[ "$LL_RETRIES" =~ ^[1-9][0-9]{0,3}$ ]] || refuse config_invalid_rclone_low_level_retries
 for f in pgpass age_recipients rclone.conf; do
   [[ -f "$SECRETS/$f" && ! -L "$SECRETS/$f" && -r "$SECRETS/$f" ]] || refuse config_missing_secret
 done
@@ -65,13 +75,31 @@ grep -qxF "[$REMOTE]" "$SECRETS/rclone.conf" || refuse config_invalid_rclone
 command -v pg_dump >/dev/null && command -v psql >/dev/null && command -v age >/dev/null && command -v rclone >/dev/null || refuse config_missing_tool
 
 # ---- 2. trava de alvo e de privilégios, ANTES de qualquer escrita ----
+# Colunas: banco | atributo de role perigoso | membro de QUALQUER role fora da allowlist (pg_has_role MEMBER ignora INHERIT, então pega
+# também NOINHERIT + SET ROLE) | privilégio de escrita/CREATE em qualquer schema não-sistema (privilégio efetivo, inclui PUBLIC e herança).
 GUARD_SQL="select current_database(),
-  coalesce((select rolsuper from pg_roles where rolname = current_user), true),
-  exists (select 1 from pg_roles r where r.rolname in ('openclaw_risk_owner','openclaw_risk_runtime') and pg_has_role(current_user, r.oid, 'member')),
-  exists (select 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace
-           where n.nspname = 'public' and c.relkind in ('r','p')
-             and (has_table_privilege(current_user, c.oid, 'INSERT') or has_table_privilege(current_user, c.oid, 'UPDATE')
-               or has_table_privilege(current_user, c.oid, 'DELETE') or has_table_privilege(current_user, c.oid, 'TRUNCATE')))"
+  coalesce((select rolsuper or rolcreaterole or rolcreatedb or rolreplication or rolbypassrls from pg_roles where rolname = current_user), true),
+  exists (select 1 from pg_roles r where r.rolname not in (current_user, 'openclaw_risk_backup') and pg_has_role(current_user, r.oid, 'member')),
+  (exists (select 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace
+            where n.nspname not in ('pg_catalog','information_schema') and n.nspname !~ '^pg_(toast|temp_)' and c.relkind in ('r','p','v','m','f')
+              and (has_table_privilege(current_user, c.oid, 'INSERT') or has_table_privilege(current_user, c.oid, 'UPDATE')
+                or has_table_privilege(current_user, c.oid, 'DELETE') or has_table_privilege(current_user, c.oid, 'TRUNCATE')
+                or has_any_column_privilege(current_user, c.oid, 'INSERT') or has_any_column_privilege(current_user, c.oid, 'UPDATE')))
+   or exists (select 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace
+            where n.nspname not in ('pg_catalog','information_schema') and n.nspname !~ '^pg_(toast|temp_)' and c.relkind = 'S'
+              and (has_sequence_privilege(current_user, c.oid, 'UPDATE') or has_sequence_privilege(current_user, c.oid, 'USAGE')))
+   or exists (select 1 from pg_namespace n
+            where n.nspname not in ('pg_catalog','information_schema') and n.nspname !~ '^pg_(toast|temp_)' and has_schema_privilege(current_user, n.oid, 'CREATE'))
+   or has_database_privilege(current_user, current_database(), 'CREATE')
+   or exists (select 1 from pg_database d where d.datname = current_database() and pg_has_role(current_user, d.datdba, 'member'))
+   or exists (select 1 from pg_namespace n
+            where n.nspname not in ('pg_catalog','information_schema') and n.nspname !~ '^pg_(toast|temp_)' and pg_has_role(current_user, n.nspowner, 'member'))
+   or exists (select 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace
+            where n.nspname not in ('pg_catalog','information_schema') and n.nspname !~ '^pg_(toast|temp_)' and pg_has_role(current_user, c.relowner, 'member'))
+   or exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+            where n.nspname not in ('pg_catalog','information_schema') and n.nspname !~ '^pg_(toast|temp_)' and pg_has_role(current_user, p.proowner, 'member'))
+   or exists (select 1 from pg_type t join pg_namespace n on n.oid = t.typnamespace
+            where n.nspname not in ('pg_catalog','information_schema') and n.nspname !~ '^pg_(toast|temp_)' and pg_has_role(current_user, t.typowner, 'member')))"
 set +e
 guard=$(psql -X -w -At -F '|' -v ON_ERROR_STOP=1 -h "$PGH" -p "$PGP" -U "$PGU" -d "$DB" -c "$GUARD_SQL" 2>/dev/null)
 guard_rc=$?
@@ -128,14 +156,39 @@ orphans=$(find "$OUT_DIR" -maxdepth 1 -type f -name '.*.partial.*' 2>/dev/null |
 [[ "$orphans" -eq 0 ]] || log partial_orphans_found "" "$orphans" 0
 
 # ---- 8. upload (sem criar bucket, sem listar, sem apagar, sem sobrescrever) e verificação por HEAD ----
-RC_FLAGS=(--config "$SECRETS/rclone.conf" --s3-no-check-bucket --no-traverse --immutable --log-level ERROR)
+# `--immutable` não impede sobrescrita no rclone 1.60.1: a barreira real é um HEAD do objeto exato ANTES de enviar, feito por
+# `copyto --dry-run --ignore-existing --no-traverse --error-on-no-transfer` (NewObject = HEAD; não lista o prefixo e nada é enviado).
+# Decide só pelo CÓDIGO DE SAÍDA (nenhuma saída do rclone é lida): 0 = HEAD 404, enviaria (não existe); 9 = nada a transferir,
+# o objeto existe; qualquer outro (HEAD negado, erro, timeout) = indeterminado, fail-closed.
+# `lsjson <objeto>` NÃO serve para inexistência: com credencial sem ListBucket o 404 vira uma listagem negada (rc 1, igual a erro).
+# `--ignore-existing` no envio real é a segunda barreira.
+RC_BASE=(--config "$SECRETS/rclone.conf" --s3-no-check-bucket --no-traverse --ignore-existing --log-level ERROR
+  --contimeout "$CONTIMEOUT" --timeout "$RCTIMEOUT" --retries "$RETRIES" --low-level-retries "$LL_RETRIES")
+RC_FLAGS=("${RC_BASE[@]}")
+# Retorno: 0 = não existe, 10 = existe, 1 = erro/indeterminado (fail-closed).
+remote_probe() {
+  local rc=0
+  rclone copyto --dry-run --error-on-no-transfer "${RC_BASE[@]}" "$1" "$2" >/dev/null 2>&1 || rc=$?
+  case "$rc" in 0) return 0 ;; 9) return 10 ;; *) return 1 ;; esac
+}
+# Tamanho remoto de um objeto que existe (HEAD; só GetObject).
+remote_size() {
+  rclone lsjson "${RC_FLAGS[@]}" --no-modtime --no-mimetype --files-only "$1" 2>/dev/null | sed -n 's/.*"Size":\([0-9]*\).*/\1/p' | head -n 1 || true
+}
 upload_rc=0
 for f in "$NAME" "$NAME.sha256"; do
   dest="$REMOTE:$BUCKET/$PREFIX/$f"
-  if ! rclone copyto "${RC_FLAGS[@]}" "$OUT_DIR/$f" "$dest" >/dev/null 2>&1; then log upload_failed "$f" 0 5; upload_rc=1; continue; fi
+  probe_rc=0
+  remote_probe "$OUT_DIR/$f" "$dest" || probe_rc=$?
+  if [[ $probe_rc -eq 10 ]]; then log upload_target_exists "$f" 0 5; upload_rc=1; continue; fi
+  if [[ $probe_rc -ne 0 ]]; then log upload_head_failed "$f" 0 5; upload_rc=1; continue; fi
+  # --error-on-no-transfer: rc 9 = o objeto surgiu entre o probe e o envio (--ignore-existing pulou); nunca vira upload_ok.
+  put_rc=0
+  rclone copyto --error-on-no-transfer "${RC_FLAGS[@]}" "$OUT_DIR/$f" "$dest" >/dev/null 2>&1 || put_rc=$?
+  if [[ $put_rc -eq 9 ]]; then log upload_target_exists "$f" 0 5; upload_rc=1; continue; fi
+  if [[ $put_rc -ne 0 ]]; then log upload_failed "$f" 0 5; upload_rc=1; continue; fi
   local_size=$(stat -c %s "$OUT_DIR/$f")
-  remote_size=$(rclone lsjson "${RC_FLAGS[@]}" --no-modtime --no-mimetype --files-only "$dest" 2>/dev/null | sed -n 's/.*"Size":\([0-9]*\).*/\1/p' | head -n 1 || true)
-  if [[ "$remote_size" != "$local_size" ]]; then log upload_verify_failed "$f" "$local_size" 5; upload_rc=1; continue; fi
+  if [[ "$(remote_size "$dest")" != "$local_size" ]]; then log upload_verify_failed "$f" "$local_size" 5; upload_rc=1; continue; fi
   log upload_ok "$f" "$local_size" 0
 done
 if [[ $upload_rc -ne 0 ]]; then exit 5; fi

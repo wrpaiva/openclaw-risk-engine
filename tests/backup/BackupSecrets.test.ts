@@ -110,8 +110,9 @@ describe('segredos fora de ps, docker inspect/top/exec e logs (backup-prod.sh re
     }
     const info = (JSON.parse(snapshots.inspect[0] as string) as Inspect[])[0] as Inspect;
     const vars = info.Config.Env;
-    expect(vars.filter((v) => v.startsWith('RISK_BACKUP_')).map((v) => v.split('=')[0]).sort()).toEqual(['RISK_BACKUP_EXPECTED_DB', 'RISK_BACKUP_S3_BUCKET', 'RISK_BACKUP_S3_PREFIX']);
-    for (const v of vars) expect(v).not.toMatch(/PASS|SECRET|TOKEN|AWS_|PGPASSWORD|RCLONE_/i);
+    expect(vars.filter((v) => v.startsWith('RISK_BACKUP_')).map((v) => v.split('=')[0]).sort()).toEqual(['RISK_BACKUP_EXPECTED_DB', 'RISK_BACKUP_RCLONE_CONTIMEOUT', 'RISK_BACKUP_RCLONE_LOW_LEVEL_RETRIES', 'RISK_BACKUP_RCLONE_RETRIES', 'RISK_BACKUP_RCLONE_TIMEOUT', 'RISK_BACKUP_S3_BUCKET', 'RISK_BACKUP_S3_PREFIX']);
+    // RCLONE_* (credenciais/config do rclone) é proibido; as 4 RISK_BACKUP_RCLONE_* são configuração não secreta (timeouts/retries).
+    for (const v of vars) expect(v.replace(/^RISK_BACKUP_RCLONE_(CONTIMEOUT|TIMEOUT|RETRIES|LOW_LEVEL_RETRIES)=\d+(ms|s|m)?$/, '')).not.toMatch(/PASS|SECRET|TOKEN|AWS_|PGPASSWORD|RCLONE_/i);
     expect(info.Config.Cmd ?? []).toEqual([]);
     expect(info.Path).toBe('/usr/local/bin/backup-job.sh');
     expect(info.Args ?? []).toEqual([]);
@@ -163,7 +164,9 @@ describe('segredos fora de ps, docker inspect/top/exec e logs (backup-prod.sh re
     expect(dump).toMatch(/ARGV: --format=custom --no-owner --no-password /);
     expect(dump).not.toMatch(/ARGV:.*(--file|-f |--dbname=)/);
     const rclone = readFileSync(join(marks, 'rclone.log'), 'utf8');
-    expect(rclone).toMatch(/ARGV: copyto --config \/run\/secrets\/rclone\.conf /);
+    // Probe (copyto --dry-run ...) e envio real (copyto --error-on-no-transfer ...): ambos usam o rclone.conf montado e os 4 limites.
+    expect(rclone).toMatch(/ARGV: copyto (--dry-run )?--error-on-no-transfer --config \/run\/secrets\/rclone\.conf /);
+    expect(rclone).toMatch(/--contimeout 3s --timeout 10s --retries 1 --low-level-retries 1 /);
     expect(rclone).not.toContain(readSecret('rclone.conf').split('\n').find((l) => l.startsWith('secret_access_key'))?.split(' = ')[1] ?? 'x-nunca');
     // pg_dump e age rodaram como UM pipe: o stdout do job e os arquivos finais não contêm segredos.
     expectNoSecrets(`${r.stdout}\n${r.stderr}`, 'stdout/stderr do job');

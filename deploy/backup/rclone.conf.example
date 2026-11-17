@@ -1,7 +1,7 @@
 # EXEMPLO — NÃO APLICADO. Vira o arquivo secret `rclone.conf` (0400) dentro de RISK_BACKUP_SECRETS_DIR. NUNCA versionar o real.
 # O nome do remote é FIXO: risk-backup (o job recusa outro nome).
-# Provedor, endpoint, região e credencial: a definir (U4). A credencial de envio deve poder só escrever objetos (PutObject; HEAD/GetObject para a
-# verificação pós-envio), sem listar nem apagar, quando o provedor permitir; a retenção de 7 dias no bucket é regra de ciclo de vida do provedor.
+# Provedor, endpoint, região e credencial: a definir (U4). A credencial de envio deve poder só escrever objetos (PutObject; HEAD/GetObject ANTES do envio, para detectar objeto pré-existente, e depois para a
+# verificação; atenção: na AWS S3 um HEAD de chave inexistente sem s3:ListBucket devolve 403 e o job sai sempre 5; confirmar no provedor), sem listar nem apagar, quando o provedor permitir; a retenção de 7 dias no bucket é regra de ciclo de vida do provedor.
 [risk-backup]
 type = s3
 provider = <a definir>

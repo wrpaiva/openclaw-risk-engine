@@ -200,7 +200,9 @@ describe('S3 indisponível ou recusando: 5 com a cópia local mantida', { timeou
     const secrets = secretsWithRclone(rcloneConf({ secret_access_key: `errado-${rand(8)}` }));
     const r = job(c, undefined, { secrets });
     expectLocalKept(c, r);
-    expect(events(r.stdout)).toContain('upload_failed');
+    // o HEAD prévio já falha com a credencial inválida (fail-closed: sem HEAD não envia)
+    expect(events(r.stdout)).toContain('upload_head_failed');
+    expect(events(r.stdout)).not.toContain('upload_ok');
     expect(s3List(c.prefix)).toEqual([]);
     expect(r.stdout + r.stderr).not.toContain(env.s3Secret);
   });
@@ -222,15 +224,15 @@ describe('S3 indisponível ou recusando: 5 com a cópia local mantida', { timeou
     expect(ls.stdout).toContain(env.bucket);
   });
 
-  // MEDIDO: com o endpoint recusando conexão o job leva ~9 min até sair 5 (sem --retries/--low-level-retries/--timeout no rclone; achado
-  // reportado ao backend). Por isso o cenário "S3 parado" só roda com RISK_BACKUP_TEST_SLOW=1. DNS que não resolve é ainda mais lento.
-  it.skipIf(process.env.RISK_BACKUP_TEST_SLOW !== '1')('LENTO: endpoint sem ninguém escutando (porta recusada) → 5 com cópia local, em tempo limitado', { timeout: 1_500_000 }, () => {
+  // Com --contimeout/--timeout/--retries/--low-level-retries obrigatórios (valores de teste exportados por scripts/test-backup.sh) o job sai 5
+  // em tempo limitado mesmo com o endpoint recusando conexão (antes, sem limites, levava ~9 min).
+  it('endpoint sem ninguém escutando (porta recusada) → 5 com cópia local, em tempo limitado pelos timeouts de teste', { timeout: 300_000 }, () => {
     const c = newCase();
     const t0 = Date.now();
-    const r = runJob({ out: c.out, secrets: secretsWithRclone(rcloneConf({ endpoint: `http://${env.dbAlias}:7070` })), env: { RISK_BACKUP_S3_PREFIX: c.prefix } }, 1_400_000);
+    const r = runJob({ out: c.out, secrets: secretsWithRclone(rcloneConf({ endpoint: `http://${env.dbAlias}:7070` })), env: { RISK_BACKUP_S3_PREFIX: c.prefix } }, 280_000);
     expectLocalKept(c, r);
     expect(s3List(c.prefix)).toEqual([]);
-    expect((Date.now() - t0) / 1000).toBeLessThan(120); // limite razoável de tempo de falha; hoje estoura (~540 s)
+    expect((Date.now() - t0) / 1000).toBeLessThan(120);
   });
 
   it('retenção local roda mesmo com falha de upload (U11): antigo removido e código segue 5', () => {
@@ -244,18 +246,107 @@ describe('S3 indisponível ou recusando: 5 com a cópia local mantida', { timeou
     expect(events(r.stdout)).toContain('retention_removed');
   });
 
-  // BUG (reportado ao backend): `rclone copyto --immutable` NÃO impede a sobrescrita no rclone 1.60.1 (nem com nem sem --no-traverse): o objeto
-  // remoto é substituído e o job sai 0. `--ignore-existing` preserva o original (a verificação de tamanho então daria 5). it.fails: quebra quando corrigido.
-  it.fails('LACUNA: objeto remoto de mesmo nome NÃO é sobrescrito (5) e o conteúdo remoto original permanece', () => {
-    const c = newCase();
-    const stubs = { date: DATE_STUB };
-    const key = `${c.prefix}/${FIXED_NAME}`;
-    const put = rcloneRoot(['rcat', `risk-backup:${env.bucket}/${key}`], { input: Buffer.from('REMOTO-ORIGINAL') });
-    expect(put.code, put.stderr).toBe(0);
-    const r = job(c, stubs);
-    expect(r.code, r.stdout).toBe(5);
-    expect(s3Get(key)?.toString()).toBe('REMOTO-ORIGINAL');
-    expect(outFiles(c.out)).toContain(FIXED_NAME); // local mantido
+  // Sobrescrita remota: HEAD prévio (copyto --dry-run --ignore-existing --error-on-no-transfer) + --ignore-existing no envio real.
+  describe('objeto remoto pré-existente nunca é sobrescrito (5, upload_target_exists, local mantido)', () => {
+    const DUMP_BYTES = 'head -c 20000 /dev/zero'; // saída determinística: o tamanho do .age cifrado é estável entre execuções
+    const stubs = { date: DATE_STUB, pg_dump: DUMP_BYTES };
+    const put = (key: string, body: string): void => {
+      const r = rcloneRoot(['rcat', `risk-backup:${env.bucket}/${key}`], { input: Buffer.from(body) });
+      expect(r.code, r.stderr).toBe(0);
+    };
+    /** Tamanho local do .age (e do .sha256) que este stub produz: roda o job num prefixo descartável. */
+    function sizes(): { age: number; sha: number } {
+      const c = newCase();
+      const r = job(c, stubs);
+      expect(r.code, r.stdout).toBe(0);
+      return { age: statSync(join(c.out, FIXED_NAME)).size, sha: statSync(join(c.out, `${FIXED_NAME}.sha256`)).size };
+    }
+    const fileEvents = (stdout: string) => jobEvents(stdout).map((e) => `${e.event}:${e.file}`);
+
+    it('.age remoto de tamanho DIFERENTE → 5; conteúdo remoto original preservado; cópia local mantida; .sha256 enviado', () => {
+      const c = newCase();
+      const key = `${c.prefix}/${FIXED_NAME}`;
+      put(key, 'REMOTO-ORIGINAL');
+      const r = job(c, { date: DATE_STUB });
+      expect(r.code, r.stdout).toBe(5);
+      expect(fileEvents(r.stdout)).toContain(`upload_target_exists:${FIXED_NAME}`);
+      expect(events(r.stdout)).not.toContain('backup_complete');
+      expect(s3Get(key)?.toString()).toBe('REMOTO-ORIGINAL');
+      expect(outFiles(c.out)).toEqual([FIXED_NAME, `${FIXED_NAME}.sha256`]); // local mantido
+      expect(s3List(c.prefix).map((o) => o.Path).sort()).toEqual([FIXED_NAME, `${FIXED_NAME}.sha256`]);
+    });
+
+    it('.age remoto com o MESMO tamanho do local → ainda 5/upload_target_exists e conteúdo remoto preservado (não depende da checagem de tamanho)', () => {
+      const { age } = sizes();
+      const c = newCase();
+      const key = `${c.prefix}/${FIXED_NAME}`;
+      const original = 'R'.repeat(age);
+      put(key, original);
+      const r = job(c, stubs);
+      expect(r.code, r.stdout).toBe(5);
+      expect(fileEvents(r.stdout)).toContain(`upload_target_exists:${FIXED_NAME}`);
+      expect(events(r.stdout)).not.toContain('upload_verify_failed');
+      expect(s3Get(key)?.toString()).toBe(original);
+      expect(statSync(join(c.out, FIXED_NAME)).size).toBe(age);
+      expect(readFileSync(join(c.out, FIXED_NAME)).subarray(0, 21).toString('latin1')).toBe('age-encryption.org/v1');
+    });
+
+    it('.sha256 remoto pré-existente também é protegido (mesmo tamanho): 5, conteúdo preservado, .age (inexistente) é enviado', () => {
+      const { sha } = sizes();
+      const c = newCase();
+      const key = `${c.prefix}/${FIXED_NAME}.sha256`;
+      const original = 'S'.repeat(sha);
+      put(key, original);
+      const r = job(c, stubs);
+      expect(r.code, r.stdout).toBe(5);
+      expect(fileEvents(r.stdout)).toContain(`upload_target_exists:${FIXED_NAME}.sha256`);
+      expect(fileEvents(r.stdout)).toContain(`upload_ok:${FIXED_NAME}`);
+      expect(s3Get(key)?.toString()).toBe(original);
+      expect(outFiles(c.out)).toEqual([FIXED_NAME, `${FIXED_NAME}.sha256`]);
+    });
+
+    it('.sha256 remoto de tamanho diferente também é preservado', () => {
+      const c = newCase();
+      const key = `${c.prefix}/${FIXED_NAME}.sha256`;
+      put(key, 'x');
+      const r = job(c, stubs);
+      expect(r.code, r.stdout).toBe(5);
+      expect(s3Get(key)?.toString()).toBe('x');
+    });
+
+    it('ambos pré-existentes → 5, dois eventos upload_target_exists, nenhum upload_ok, nada alterado', () => {
+      const c = newCase();
+      put(`${c.prefix}/${FIXED_NAME}`, 'A1');
+      put(`${c.prefix}/${FIXED_NAME}.sha256`, 'B1');
+      const r = job(c, stubs);
+      expect(r.code, r.stdout).toBe(5);
+      expect(events(r.stdout).filter((e) => e === 'upload_target_exists')).toHaveLength(2);
+      expect(events(r.stdout)).not.toContain('upload_ok');
+      expect(s3Get(`${c.prefix}/${FIXED_NAME}`)?.toString()).toBe('A1');
+      expect(s3Get(`${c.prefix}/${FIXED_NAME}.sha256`)?.toString()).toBe('B1');
+      expect(outFiles(c.out)).toHaveLength(2);
+    });
+
+    // Segunda barreira (T2): o objeto surge DEPOIS do probe. O stub faz o probe (--dry-run) responder "não existe" (0) e delega o resto ao
+    // rclone real; o envio real usa --ignore-existing + --error-on-no-transfer, então o objeto pré-existente não é sobrescrito nem conta como upload_ok.
+    it('objeto criado após o probe (mesmo tamanho) não é sobrescrito e NÃO conta como upload_ok', () => {
+      const { age } = sizes();
+      const c = newCase();
+      const key = `${c.prefix}/${FIXED_NAME}`;
+      const original = 'R'.repeat(age);
+      put(key, original);
+      const r = job(c, { ...stubs, rclone: 'for a in "$@"; do [ "$a" = "--dry-run" ] && exit 0; done\nexec /usr/bin/rclone "$@"' });
+      expect(s3Get(key)?.toString()).toBe(original);
+      expect(fileEvents(r.stdout)).not.toContain(`upload_ok:${FIXED_NAME}`);
+      expect(r.code, r.stdout).toBe(5);
+    });
+
+    it('controle: sem objeto remoto o mesmo cenário sai 0 e envia os dois', () => {
+      const c = newCase();
+      const r = job(c, stubs);
+      expect(r.code, r.stdout).toBe(0);
+      expect(s3List(c.prefix).map((o) => o.Path).sort()).toEqual([FIXED_NAME, `${FIXED_NAME}.sha256`]);
+    });
   });
 });
 

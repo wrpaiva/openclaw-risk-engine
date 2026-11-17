@@ -65,7 +65,7 @@ Resumo das proteções existentes e dos riscos residuais. Base: SPEC §11.1, ADR
 ## Backup (ADR-0012)
 
 - **Cifragem `age` com chave pública na VPS e privada fora dela**: um invasor da VPS não lê backups; **a perda da chave privada torna os backups irrecuperáveis** (custódia a definir, U9). Nunca coloque a identidade na VPS nem na imagem.
-- **Credencial de backup**: login próprio somente leitura (membro só de `openclaw_risk_backup`; nunca de owner/runtime); o job recusa superusuário, membros de owner/runtime e qualquer privilégio de escrita antes de gravar.
+- **Credencial de backup**: login próprio somente leitura (membro só de `openclaw_risk_backup`; nunca de owner/runtime); o job recusa, antes de gravar, login com SUPERUSER/CREATEROLE/CREATEDB/REPLICATION/BYPASSRLS, membro (direto ou transitivo, com ou sem INHERIT) de qualquer role além de `openclaw_risk_backup`, dono do banco, de schema ou de objeto, e privilégio de escrita, USAGE em sequência ou CREATE (schema/banco). Barreira de login, não substitui a revisão do provisionamento (`default_transaction_read_only` é só recomendação: o próprio login pode desligá-lo na sessão).
 - **Segredos só em arquivos**: `pgpass`, `age_recipients`, `rclone.conf` em 0400 num diretório 0700 do uid do cron, montados somente leitura em `/run/secrets`. Nada de senha ou chave em argv, variável de ambiente, `docker inspect` ou log. O job só loga linhas JSON fixas (sem stderr bruto das ferramentas).
 - **Sem dump em claro em disco**: `pg_dump | age -o`; o arquivo parcial já é cifrado e só é publicado (sem sobrescrever) depois de validado.
 - **Contêiner**: `--read-only` (sem `tmpfs`), `--cap-drop ALL`, `no-new-privileges`, uid do host, sem portas; só a rede Docker necessária.

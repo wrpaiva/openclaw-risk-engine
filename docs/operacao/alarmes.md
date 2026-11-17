@@ -52,7 +52,7 @@ O job de backup **não** emite métricas do serviço: o sinal é o **código de 
 | 2 | `config_invalid_*`, `config_missing_secret`, `guard_connect_failed`, `guard_target_or_privileges_refused` | Nada foi gravado. Config/secret errados, banco inesperado, login com escrita ou fora do esperado. Se surgiu após um `migrate`: reaplicar `backup-grants.sql` |
 | 3 | (mensagem do `flock`) | Execução anterior ainda rodando; investigar se travou |
 | 4 | `dump_failed`, `dump_invalid_output`, `final_exists`, `publish_failed` | Sem arquivo final. Banco indisponível, `age` falhou, nome já existente ou disco cheio |
-| 5 | `upload_failed`, `upload_verify_failed` | Cópia local existe (e a retenção local rodou); a cópia externa falhou. Reenviar manualmente com aprovação; sem a cópia externa a VPS é ponto único de falha |
+| 5 | `upload_failed`, `upload_verify_failed`, `upload_head_failed`, `upload_target_exists` | `upload_target_exists`: o objeto remoto já existia e NÃO foi sobrescrito (investigar colisão de nome; nunca apagar às cegas). Com `--retries` > 1, um PUT que gravou mas perdeu a resposta pode gerar este evento para o PRÓPRIO objeto: confira o objeto remoto (tamanho e conteúdo) com o `.sha256` local antes de concluir que houve colisão; o alerta continua valendo. Cópia local existe (e a retenção local rodou); a cópia externa falhou. Reenviar manualmente com aprovação; sem a cópia externa a VPS é ponto único de falha |
 | 6 | `retention_failed` | Backup OK; arquivo antigo não removido. Verificar permissões e disco |
 | ≠ 0 não listado | - | Falha do docker (tratada como 4); investigar |
 
