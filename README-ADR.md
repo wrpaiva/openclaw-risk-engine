@@ -3,7 +3,7 @@
 **Versão:** 1.0.0  
 **Data:** 2026-11-13  
 **Status do pacote:** Proposta para revisão  
-**Fonte de requisitos:** `SPEC_OPENCLAW_RISK_ENGINE.md` v1.0.0
+**Fonte de requisitos:** `SPEC_OPENCLAW_RISK_ENGINE.md` v1.1.0 (§1–15 idênticas à v1.0.0; §16 adicionada em 2026-11-16)
 
 Este conjunto registra **decisões arquiteturais propostas**, suas alternativas, consequências, riscos, critérios de validação e condições de revisão. **Nenhuma ADR foi formalmente aceita ou implantada** por sua inclusão neste pacote.
 
@@ -30,9 +30,9 @@ Este conjunto registra **decisões arquiteturais propostas**, suas alternativas,
 | [ADR-0017 — Tratar sinais e planos como dados não autoritativos](docs/adr/0017-tratar-sinais-e-planos-como-dados-não-autoritativos.md) | Proposto |
 | [ADR-0018 — Tratar backtesting e simulações como evidência, nunca autorização](docs/adr/0018-tratar-backtesting-e-simulações-como-evidência-nunca-autorização.md) | Proposto |
 
-> As ADR-0013 a 0018 chegaram numeradas como 0011–0016, colidindo com as ADR-0011 e 0012 já aceitas, e foram renumeradas em 2026-11-16. Elas citam a `SPEC_OPENCLAW_RISK_ENGINE.md` v1.1.0 §16, que ainda não está no repositório (a SPEC versionada é a v1.0.0).
+> As ADR-0013 a 0018 chegaram numeradas como 0011–0016, colidindo com as ADR-0011 e 0012 já aceitas, e foram renumeradas em 2026-11-16. Elas citam a `SPEC_OPENCLAW_RISK_ENGINE.md` v1.1.0 §16, versionada em `docs/` em 2026-11-17 com a §16.7 já renumerada.
 >
-> Decisão do usuário em 2026-11-16: o Strategy Engine será um **projeto separado**. Este repositório só implementa o lado do Risk Engine dessas ADRs (fronteira de autorização, testes negativos de bypass e observabilidade pós-commit), e só depois da aprovação delas.
+> Decisão do usuário em 2026-11-16: o Strategy Engine será um **projeto separado**. Este repositório só implementa o lado do Risk Engine dessas ADRs (fronteira de autorização, testes negativos de bypass e observabilidade pós-commit), e só depois da aprovação delas. Contratos, matriz e skills `wa-trader-*` foram movidos em 2026-11-17 para o projeto irmão `../openclaw-strategy-engine/`.
 
 ## Como usar
 

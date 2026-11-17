@@ -1,9 +1,9 @@
 # SPEC — OpenClaw Trading Risk Engine
 
 **ID:** SPEC-TRADING-RISK-001  
-**Versão:** 1.0.0  
+**Versão:** 1.1.0  
 **Status:** Proposta para implementação (não implantada)  
-**Data:** 2026-11-13  
+**Data:** 2026-11-16  
 **Stack-alvo:** Node.js 22 LTS+, TypeScript 5.x, PostgreSQL 14, Vitest, Docker (apenas quando necessário)  
 **Diretório proposto:** `/opt/openclaw-risk-engine`  
 **Idioma dos contratos:** inglês para identificadores técnicos; documentação e logs operacionais em português, quando adequado.
@@ -729,3 +729,63 @@ Uma entrega só está pronta quando:
 - Repositório visual: `https://github.com/wrpaiva/pixel-agents-trading`.
 
 **Nota de arquitetura:** esta spec é uma proposta técnica de implementação e não afirma que Risk Engine, tabelas, endpoints HTTP ou serviços de execução já existem.
+
+
+---
+
+## 16. Integração futura com skills de estratégia (adendo v1.1.0)
+
+**Origem de referência:** [Jakeschincariol/day-trader-skill](https://github.com/Jakeschincariol/day-trader-skill), consultado em 2026-11-16. O repositório público descreve 11 skills Claude e ferramentas Python para análise de ações americanas. Os arquivos `skills/` deste pacote são **adaptações autorais de instruções**, não uma cópia validada nem uma instalação do repositório upstream. Não pressupor compatibilidade operacional automática com OpenClaw.
+
+### 16.1 Fronteiras e modo de implantação
+
+- Manter Risk Engine em projeto independente (`/opt/openclaw-risk-engine`), único componente capaz de emitir `ALLOW_PAPER` após política aprovada, dados verificados e reserva atômica.
+- Criar Strategy Engine lógico isolado, inicialmente apenas contratos + habilidades de análise **somente leitura**, sem criar stacks ou serviços adicionais.
+- Skills geram `SignalCandidate`, `TradePlanDraft` e `TradeProposalDraft`; esses artefatos **não são ordens nem permissões**. Um adaptador transacional autenticado e sob identidade de serviço distinta poderá converter um rascunho em `TradeProposal` para a avaliação.
+- O canal SSE `pixel-events_receiver` permanece somente observabilidade. O evento `agent_end` nunca significa autorização.
+- Não instalar nem expor `trader-broker` ou conectores de corretora no workspace dos agentes nesta fase, mesmo em paper trading; apenas um futuro executor isolado poderá consumir decisões assinadas/validadas e não expiradas.
+- Não permitir `exec`, `curl`, shells ou tools genéricos acessar corretoras, endpoints de envio de ordens, credenciais de produção ou bancos de ordens. A restrição deve ser tecnicamente imposta fora do prompt.
+
+### 16.2 Pipeline proposto
+
+`MarketDataSnapshot (verificado)` → `Scanner` → `Contexto/Notícias` → `EntryPlan` → `ExitPlan` → `SimulationReport (opcional)` → `TradeProposalDraft` → `Risk Engine` → `BLOCK | ALLOW_PAPER` → `Paper Executor (fase posterior)`
+
+Os estágios não podem fabricar preços, volatilidade, saldo ou notícias. Ausência de evidência = `NO_SIGNAL` ou `INSUFFICIENT_DATA`, nunca aprovação.
+
+### 16.3 Contratos adicionais
+
+- `MarketDataSnapshot`: `sourceId`, `instrumentId`, `venue`, `observedAt`, `receivedAt`, `currency`, `bid`, `ask`, `last`, `precision`, `marketSession`, `qualityFlags`, `sourceReference`. Valores financeiros como strings decimais canônicas; timezone UTC ISO 8601. Staleness/horário/precisão definidos por catálogo e política, não por LLM.
+- `SignalCandidate`: `signalId`, `strategyId`, `strategyVersion`, `agentId`, `instrumentId`, `side`, `detectedAt`, `sourceSnapshotIds`, `evidence`, `status: CANDIDATE | INSUFFICIENT_DATA | REJECTED`.
+- `TradePlanDraft`: `planId`, `signalId`, `entry`, `stopLoss`, `takeProfit`, `expiryAt`, `evidence`, `assumptions`, `status: DRAFT`; `quantity` apenas sugestão.
+- `SimulationReport`: `simulationId`, `planId`, `datasetVersion`, `methodology`, `seed`, `sampleSize`, `timeWindow`, `limitations`; qualquer probabilidade é descritiva, não uma aprovação. Prevenir look-ahead, survivorship bias e leakage; incorporar custos e slippage configuráveis.
+- `TradeProposalDraft`: `schemaVersion`, `proposalId`, `idempotencyKey`, `agentId`, `strategyId`, `instrumentId`, `side`, `quantity`, `entryPrice`, `stopLoss`, `takeProfit`, `marketSnapshotId`, `createdAt`, `expiresAt`, `accountMode: PAPER`, `status: DRAFT`, `evidenceRefs`. O Risk Engine deve complementar e validar contexto por fontes próprias confiáveis, não aceitar limites ou saldo declarados pelos agentes.
+
+### 16.4 Controle de fonte, estratégia e orçamento
+
+1. Manter allowlist de provedores por classe de ativo; mercado de ações EUA não pode ser presumido aplicável a BTC/ETH, EUR/GBP e ouro. Definir convenções de contratos, pips, lotes, horários, alavancagem e moeda por instrumento no catálogo.
+2. Definir TTL para preços, notícias e propostas; rejeitar dados atrasados, fora de sessão ou com clocks divergentes.
+3. Controlar agendamentos por mercado/fuso horário, horário de verão, deduplicação de jobs, limite de taxa, tentativas e circuit breaker.
+4. Estabelecer orçamento por agente, estratégia e período para ferramentas externas e LLM; custo excedido não relaxa regras de risco.
+5. Atribuir `traceId` e correlacionar `signalId -> planId -> proposalId -> decisionId -> paperOrderId` quando houver execução simulada.
+6. Registrar proveniência (URL/ID de dado, hash quando cabível, versão da skill, versão do modelo, política, timestamp) sem registrar segredos. Tratar conteúdo de notícias e outputs de tools como não confiável.
+
+### 16.5 Segurança de supply chain das skills
+
+- Revisar manualmente `SKILL.md`, scripts executáveis, rede, dependências e licenças antes de instalar upstream; pin de commit/versões em caso de reutilização de código.
+- Não copiar automaticamente `trader-broker`; operações de escrita proibidas.
+- Aplicar privilégio mínimo e isolamento de filesystem/rede; allowlist de ferramentas e endpoints.
+- Instruções externas nunca podem alterar políticas ou substituir decisões do motor.
+- Testar prompt injection em notícias, páginas e dados retornados por ferramentas.
+
+### 16.6 Critérios de aceite específicos
+
+- Cada skill read-only gera saída JSON tipada sem executar ordens, criar políticas ou consultar secrets.
+- TradeProposalDraft sem fonte de preço, timestamp ou stop obrigatório é rejeitado pelo validador de contrato e pelo Risk Engine.
+- Eventos e SSE não acionam execução ou aprovação.
+- Limites não definidos implicam `BLOCK`; simulação não substitui risco nem política.
+- `trader-broker` permanece ausente/desabilitado em deploy e permissões, verificável por teste de configuração.
+- Testes unitários locais durante desenvolvimento; regressão ponta a ponta só após todas as integrações, como definido no ADR-0009.
+
+### 16.7 ADRs relacionados
+
+ADR-0013 Strategy/Risk; ADR-0014 Market Data e scheduler; ADR-0015 Observabilidade; ADR-0016 adoção controlada de skills; ADR-0017 sinais ≠ autorizações; ADR-0018 simulação e backtesting. Todos permanecem `Proposto` até aprovação. (Numeradas originalmente como ADR-0011 a 0016; renumeradas em 2026-11-16 por colidirem com as ADR-0011 e 0012 já aceitas.)
