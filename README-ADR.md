@@ -23,6 +23,16 @@ Este conjunto registra **decisões arquiteturais propostas**, suas alternativas,
 | [ADR-0010 — Governança de evolução e proibição de execução real nesta fase](docs/adr/0010-governança-de-evolução-e-proibição-de-execução-real-nesta-fase.md) | Proposto |
 | [ADR-0011 — Rede e TLS do canal transacional](docs/adr/0011-rede-e-tls-do-canal-transacional.md) | Aceito (2026-11-15) |
 | [ADR-0012 — Backup da base dedicada](docs/adr/0012-backup-da-base-dedicada.md) | Aceito (2026-11-15) |
+| [ADR-0013 — Separar Strategy Engine de Risk Engine](docs/adr/0013-separar-strategy-engine-de-risk-engine.md) | Proposto |
+| [ADR-0014 — Validar Market Data, scheduler e custos antes de qualquer sinal](docs/adr/0014-validar-market-data-scheduler-e-custos-antes-de-qualquer-sinal.md) | Proposto |
+| [ADR-0015 — Isolar observabilidade financeira e alertas do caminho transacional](docs/adr/0015-isolar-observabilidade-financeira-e-alertas-do-caminho-transacional.md) | Proposto |
+| [ADR-0016 — Adotar skills externas somente após revisão de supply chain](docs/adr/0016-adotar-skills-externas-somente-após-revisão-de-supply-chain.md) | Proposto |
+| [ADR-0017 — Tratar sinais e planos como dados não autoritativos](docs/adr/0017-tratar-sinais-e-planos-como-dados-não-autoritativos.md) | Proposto |
+| [ADR-0018 — Tratar backtesting e simulações como evidência, nunca autorização](docs/adr/0018-tratar-backtesting-e-simulações-como-evidência-nunca-autorização.md) | Proposto |
+
+> As ADR-0013 a 0018 chegaram numeradas como 0011–0016, colidindo com as ADR-0011 e 0012 já aceitas, e foram renumeradas em 2026-11-16. Elas citam a `SPEC_OPENCLAW_RISK_ENGINE.md` v1.1.0 §16, que ainda não está no repositório (a SPEC versionada é a v1.0.0).
+>
+> Decisão do usuário em 2026-11-16: o Strategy Engine será um **projeto separado**. Este repositório só implementa o lado do Risk Engine dessas ADRs (fronteira de autorização, testes negativos de bypass e observabilidade pós-commit), e só depois da aprovação delas.
 
 ## Como usar
 
